@@ -232,6 +232,24 @@ fn use_prebuilt_lbug(manifest_dir: &Path) -> Option<Vec<PathBuf>> {
     }
 
     let lib_dir = prebuilt_lib_dir(manifest_dir);
+
+    // The static prebuilt liblbug.a has external references to bundled
+    // third-party libraries (yyjson, simsimd, etc.).  Release archives that
+    // pre-date proper packaging only ship liblbug.a without those archives.
+    // Detect this situation and fall back to a source build so that the link
+    // step doesn't silently fail with "Undefined symbols: _yyjson_val_mut_copy".
+    if !lib_dir.join("libyyjson.a").exists() && !lib_dir.join("yyjson.lib").exists() {
+        println!(
+            "cargo:warning=Prebuilt liblbug.a does not include bundled dep archives \
+             (libyyjson.a not found in {}); falling back to source build.",
+            lib_dir.display()
+        );
+        // Remove the incomplete prebuilt so that try_download_prebuilt_lbug
+        // would re-attempt the download next build (it checks file existence).
+        // We return None here to trigger the CMake source-build path.
+        return None;
+    }
+
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rerun-if-changed={}", lib_dir.display());
     emit_lbug_metadata(&prebuilt_source_desc(), &lib_dir);
