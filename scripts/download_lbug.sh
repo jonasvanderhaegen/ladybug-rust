@@ -26,7 +26,16 @@ ARCH="$(uname -m)"
 
 case "$OS:$ARCH" in
   Darwin:arm64)
-    ASSET="liblbug-prebuilt-macos-arm64.tar.gz"
+    ASSET="liblbug-static-osx-arm64.tar.gz"
+    ;;
+  Darwin:x86_64)
+    ASSET="liblbug-static-osx-x86_64.tar.gz"
+    ;;
+  Linux:x86_64)
+    ASSET="liblbug-static-linux-x86_64-compat.tar.gz"
+    ;;
+  Linux:aarch64)
+    ASSET="liblbug-static-linux-aarch64-compat.tar.gz"
     ;;
   *)
     echo "No complete lbug prebuilt published for $OS/$ARCH; falling back to source build." >&2
