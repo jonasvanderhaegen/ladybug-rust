@@ -54,13 +54,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ inputs.tag }}"
+          printf 'Prebuilt liblbug.a (static, with bundled dep archives) and shared libraries for all supported platforms.\n\nBuilt from skylence-be/ladybug run %s.\n\nUsed by scripts/download_lbug.sh in this repository.\n' "$LADYBUG_RUN_ID" > /tmp/release-notes.md
           gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --title "lbug prebuilt libraries $TAG" \
-            --notes "Prebuilt \`liblbug.a\` (static, with bundled dep archives) and shared libraries for all supported platforms.
-
-Built from [skylence-be/ladybug](https://github.com/skylence-be/ladybug) run \`$LADYBUG_RUN_ID\`.
-
-Used by \`scripts/download_lbug.sh\` in this repository." \
+            --notes-file /tmp/release-notes.md \
             release-assets/*
