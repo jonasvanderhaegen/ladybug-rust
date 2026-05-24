@@ -18,7 +18,7 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="${1:-$PROJECT_DIR/.cache/lbug-prebuilt.env}"
 CACHE_LIB_DIR="${LBUG_TARGET_DIR:-$PROJECT_DIR/.cache/lbug-prebuilt/lib}"
 
-RELEASE_REPO="${LBUG_PREBUILT_REPO:-jonasvanderhaegen/ladybug-rust}"
+RELEASE_REPO="${LBUG_PREBUILT_REPO:-skylence-be/ladybug-rust}"
 RELEASE_TAG="${LBUG_PREBUILT_TAG:-lbug-prebuilt-0.16.1}"
 
 OS="$(uname -s)"
