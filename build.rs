@@ -63,22 +63,29 @@ fn link_libraries(link_bundled_deps: bool) {
             "simsimd",
             "yyjson",
         ] {
-            if rustversion::cfg!(since(1.82)) {
-                println!("cargo:rustc-link-lib=static:+whole-archive={lib}");
-            } else {
-                println!("cargo:rustc-link-lib=static={lib}");
-            }
+            // Regular (non-whole-archive) static linking: liblbug.a is a fat
+            // archive (cmake BundleStaticLibrary merges these deps in), so
+            // whole-archive on the dep archives too would produce
+            // duplicate-symbol link errors on macOS/Linux.
+            println!("cargo:rustc-link-lib=static={lib}");
         }
     }
 }
 
-/// Emit `cargo:rustc-link-lib` directives for every bundled-dep static archive
-/// that was shipped alongside the prebuilt `liblbug.a`.  The prebuilt archive
-/// contains object files that reference symbols from these libraries (yyjson,
-/// simsimd, etc.) but does not fold them in, so the linker must be told to
-/// pull them in explicitly.  The directives are only emitted for files that
-/// actually exist so this is a no-op when the prebuilt ships a fused archive.
+/// Emit `cargo:rustc-link-lib` directives for the bundled-dep static archives
+/// shipped alongside the prebuilt `liblbug.a`.  Our complete prebuilt ships
+/// these archives in a `deps/` subdirectory; older/incomplete layouts may put
+/// them next to `liblbug.a`.  We search both.  Regular (non-whole-archive)
+/// static linking is used on purpose: the prebuilt `liblbug.a` is a fat
+/// archive that already has these symbols folded in via cmake
+/// BundleStaticLibrary, so whole-archive on the dep archives would produce
+/// duplicate-symbol link errors.  Regular linking lets the linker resolve any
+/// references lazily and is a no-op when the symbols are already present.
 fn link_prebuilt_bundled_deps(lib_dir: &Path) {
+    let deps_dir = lib_dir.join("deps");
+    if deps_dir.is_dir() {
+        println!("cargo:rustc-link-search=native={}", deps_dir.display());
+    }
     for lib in [
         "utf8proc",
         "antlr4_cypher",
@@ -98,13 +105,10 @@ fn link_prebuilt_bundled_deps(lib_dir: &Path) {
         "simsimd",
         "yyjson",
     ] {
-        let lib_path = lib_dir.join(format!("lib{lib}.a"));
-        if lib_path.exists() {
-            if rustversion::cfg!(since(1.82)) {
-                println!("cargo:rustc-link-lib=static:+whole-archive={lib}");
-            } else {
-                println!("cargo:rustc-link-lib=static={lib}");
-            }
+        let found = lib_dir.join(format!("lib{lib}.a")).exists()
+            || deps_dir.join(format!("lib{lib}.a")).exists();
+        if found {
+            println!("cargo:rustc-link-lib=static={lib}");
         }
     }
 }
@@ -233,30 +237,12 @@ fn use_prebuilt_lbug(manifest_dir: &Path) -> Option<Vec<PathBuf>> {
 
     let lib_dir = prebuilt_lib_dir(manifest_dir);
 
-    // The static prebuilt liblbug.a has external references to bundled
-    // third-party libraries (yyjson, simsimd, etc.).  Release archives that
-    // pre-date proper packaging only ship liblbug.a without those archives.
-    // Detect this situation and fall back to a source build so that the link
-    // step doesn't silently fail with "Undefined symbols: _yyjson_val_mut_copy".
-    if !lib_dir.join("libyyjson.a").exists() && !lib_dir.join("yyjson.lib").exists() {
-        println!(
-            "cargo:warning=Prebuilt liblbug.a does not include bundled dep archives \
-             (libyyjson.a not found in {}); falling back to source build.",
-            lib_dir.display()
-        );
-        // Remove the incomplete prebuilt so that try_download_prebuilt_lbug
-        // would re-attempt the download next build (it checks file existence).
-        // We return None here to trigger the CMake source-build path.
-        return None;
-    }
-
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rerun-if-changed={}", lib_dir.display());
     emit_lbug_metadata(&prebuilt_source_desc(), &lib_dir);
-    // Link any bundled-dep archives that were shipped alongside liblbug.a.
-    // The prebuilt archive has unresolved references to yyjson, simsimd, etc.;
-    // without these directives the final link step fails with
-    // "Undefined symbols: _yyjson_val_mut_copy, ..." on macOS/Linux.
+    // Link any bundled-dep archives shipped alongside liblbug.a (in deps/).
+    // liblbug.a is a fat archive, so these are linked non-whole-archive and
+    // act as a safety net for any symbols not already folded in.
     link_prebuilt_bundled_deps(&lib_dir);
     Some(vec![lib_dir])
 }
