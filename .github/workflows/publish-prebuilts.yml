@@ -7,6 +7,10 @@ on:
         description: 'Release tag (e.g. lbug-prebuilt-0.16.1)'
         required: true
         default: 'lbug-prebuilt-0.16.1'
+      source_ref:
+        description: 'ladybug C++ source ref to build (must match the chosen lbug version; main is 0.17.0 whose extensions are unavailable)'
+        required: true
+        default: 'v0.16.1'
 
 jobs:
   publish:
@@ -18,7 +22,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.LADYBUG_BUILD_TOKEN }}
         run: |
-          gh workflow run precompiled-bin-workflow.yml --repo skylence-be/ladybug
+          gh workflow run precompiled-bin-workflow.yml --repo skylence-be/ladybug \
+            --field source_ref="${{ inputs.source_ref }}"
           sleep 10
           RUN_ID=$(gh run list \
             --repo skylence-be/ladybug \
