@@ -1,5 +1,15 @@
 #!/bin/sh
-# Download prebuilt static liblbug into the Rust crate cache.
+# Download a COMPLETE prebuilt static liblbug (liblbug.a + bundled dep archives)
+# from the cartographer fork's GitHub release, into the Rust crate cache.
+#
+# Upstream's prebuilt ships only liblbug.a without the bundled third-party
+# static archives (libyyjson.a, etc.) that liblbug.a references, so its final
+# link fails ("Undefined symbols: _yyjson_*"). This release asset bundles
+# liblbug.a together with all of its bundled dep archives so build.rs can link
+# them with whole-archive (see link_prebuilt_bundled_deps in build.rs).
+#
+# Only platforms we publish an asset for are handled; every other platform
+# exits nonzero so build.rs falls back to a CMake source build.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -7,48 +17,49 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 ENV_FILE="${1:-$PROJECT_DIR/.cache/lbug-prebuilt.env}"
 CACHE_LIB_DIR="${LBUG_TARGET_DIR:-$PROJECT_DIR/.cache/lbug-prebuilt/lib}"
-LIB_KIND="${LBUG_LIB_KIND:-static}"
-UPSTREAM_SCRIPT="$SCRIPT_DIR/download-liblbug.sh"
-UPSTREAM_URL="https://raw.githubusercontent.com/LadybugDB/ladybug/refs/heads/main/scripts/download-liblbug.sh"
 
-if [ ! -f "$UPSTREAM_SCRIPT" ]; then
-  echo "Fetching $UPSTREAM_URL ..."
-  curl -fsSL "$UPSTREAM_URL" -o "$UPSTREAM_SCRIPT"
-  chmod +x "$UPSTREAM_SCRIPT"
-fi
-
-LBUG_TARGET_DIR="$CACHE_LIB_DIR" LBUG_LIB_KIND="$LIB_KIND" bash "$UPSTREAM_SCRIPT"
+RELEASE_REPO="${LBUG_PREBUILT_REPO:-jonasvanderhaegen/ladybug-rust}"
+RELEASE_TAG="${LBUG_PREBUILT_TAG:-lbug-prebuilt-0.16.1}"
 
 OS="$(uname -s)"
-if [ "$LIB_KIND" = "shared" ]; then
-  case "$OS" in
-    Darwin)
-      LIB_PATH="$CACHE_LIB_DIR/liblbug.dylib"
-      ;;
-    Linux)
-      LIB_PATH="$CACHE_LIB_DIR/liblbug.so"
-      ;;
-    MINGW*|MSYS*|CYGWIN*)
-      LIB_PATH="$CACHE_LIB_DIR/lbug_shared.dll"
-      ;;
-    *)
-      echo "Unsupported OS: $OS" >&2
-      exit 1
-      ;;
-  esac
+ARCH="$(uname -m)"
+
+case "$OS:$ARCH" in
+  Darwin:arm64)
+    ASSET="liblbug-prebuilt-macos-arm64.tar.gz"
+    ;;
+  *)
+    echo "No complete lbug prebuilt published for $OS/$ARCH; falling back to source build." >&2
+    exit 1
+    ;;
+esac
+
+mkdir -p "$CACHE_LIB_DIR"
+
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+TARBALL="$TMP_DIR/$ASSET"
+
+echo "Downloading $ASSET from $RELEASE_REPO ($RELEASE_TAG) ..."
+if command -v gh >/dev/null 2>&1; then
+  gh release download "$RELEASE_TAG" --repo "$RELEASE_REPO" -p "$ASSET" \
+    --dir "$TMP_DIR" --clobber
 else
-  case "$OS" in
-    MINGW*|MSYS*|CYGWIN*)
-      LIB_PATH="$CACHE_LIB_DIR/lbug.lib"
-      ;;
-    *)
-      LIB_PATH="$CACHE_LIB_DIR/liblbug.a"
-      ;;
-  esac
+  ASSET_URL="https://github.com/$RELEASE_REPO/releases/download/$RELEASE_TAG/$ASSET"
+  curl -fsSL "$ASSET_URL" -o "$TARBALL"
 fi
 
+if [ ! -f "$TARBALL" ]; then
+  echo "Failed to download $ASSET" >&2
+  exit 1
+fi
+
+echo "Extracting into $CACHE_LIB_DIR ..."
+tar -xzf "$TARBALL" -C "$CACHE_LIB_DIR"
+
+LIB_PATH="$CACHE_LIB_DIR/liblbug.a"
 if [ ! -f "$LIB_PATH" ]; then
-  echo "Expected precompiled library not found at $LIB_PATH" >&2
+  echo "Expected precompiled library not found at $LIB_PATH after extraction" >&2
   exit 1
 fi
 
