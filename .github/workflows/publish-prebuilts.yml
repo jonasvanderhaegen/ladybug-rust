@@ -1,0 +1,66 @@
+name: Publish Prebuilt Libraries
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. lbug-prebuilt-0.16.1)'
+        required: true
+        default: 'lbug-prebuilt-0.16.1'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Trigger ladybug C++ prebuilt workflow
+        env:
+          GH_TOKEN: ${{ secrets.LADYBUG_BUILD_TOKEN }}
+        run: |
+          gh workflow run precompiled-bin-workflow.yml --repo skylence-be/ladybug
+          sleep 10
+          RUN_ID=$(gh run list \
+            --repo skylence-be/ladybug \
+            --workflow precompiled-bin-workflow.yml \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId')
+          echo "LADYBUG_RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+          echo "Triggered run: $RUN_ID"
+
+      - name: Wait for build (~30 min)
+        env:
+          GH_TOKEN: ${{ secrets.LADYBUG_BUILD_TOKEN }}
+        run: gh run watch "$LADYBUG_RUN_ID" --repo skylence-be/ladybug --exit-status
+
+      - name: Download artifacts
+        env:
+          GH_TOKEN: ${{ secrets.LADYBUG_BUILD_TOKEN }}
+        run: |
+          gh run download "$LADYBUG_RUN_ID" \
+            --repo skylence-be/ladybug \
+            --dir raw-artifacts
+
+      - name: Flatten to release-assets/
+        run: |
+          mkdir release-assets
+          find raw-artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) \
+            -exec cp {} release-assets/ \;
+          ls -lh release-assets/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ inputs.tag }}"
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "lbug prebuilt libraries $TAG" \
+            --notes "Prebuilt \`liblbug.a\` (static, with bundled dep archives) and shared libraries for all supported platforms.
+
+Built from [skylence-be/ladybug](https://github.com/skylence-be/ladybug) run \`$LADYBUG_RUN_ID\`.
+
+Used by \`scripts/download_lbug.sh\` in this repository." \
+            release-assets/*
