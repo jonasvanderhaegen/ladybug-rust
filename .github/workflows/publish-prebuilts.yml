@@ -12,9 +12,15 @@ on:
         required: true
         default: 'v0.16.1'
 
+concurrency:
+  group: builds-ladybug-rust
+  cancel-in-progress: false
+
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on:
+      group: builds
+      labels: [self-hosted, macOS, ARM64]
     permissions:
       contents: write
     steps:
