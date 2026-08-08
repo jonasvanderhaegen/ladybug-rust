@@ -11,7 +11,12 @@
 //!
 //! Run each probe in its OWN process (`-- --ignored --exact <name>`): the FTS
 //! probes load a database extension process-wide, which would contaminate any
-//! sibling test sharing the harness process.
+//! sibling test sharing the harness process. A batch run (`-- --ignored`) is
+//! additionally serialized by `PROBE_STORE_LOCK`: all probes share the single
+//! `LBUG_REPRO_DB` store path, and libtest's default parallel threads made
+//! concurrent probes race the same database files (shadow-replay refusal on
+//! read-only open, WAL unlink ENOENT, interleaved WAL records asserting
+//! UNREACHABLE_CODE in wal_record.cpp) — skylence-be/ladybug#7.
 //!
 //! ENGINE IDENTITY (the lesson of 2026-08-06): build with `LBUG_VERSION=0.17.0`
 //! so build.rs links the same prebuilt liblbug the skybox daemon ships (storage
@@ -23,12 +28,23 @@
 //! destroying the evidence. Take a fresh DB copy per engine build.
 
 use std::collections::BTreeMap;
+use std::sync::Mutex;
 
 use lbug::{Connection, Database, SystemConfig, Value};
 
 const IN_FILTER: &str =
     "r.type IN ['EXTENDS', 'IMPLEMENTS', 'USES_TRAIT', 'METHOD_OVERRIDES', 'METHOD_IMPLEMENTS']";
 const OR_FILTER: &str = "(r.type = 'EXTENDS' OR r.type = 'IMPLEMENTS' OR r.type = 'USES_TRAIT' OR r.type = 'METHOD_OVERRIDES' OR r.type = 'METHOD_IMPLEMENTS')";
+
+/// Serializes every probe in this file: they all open the one store named by
+/// `LBUG_REPRO_DB`, so two probes on parallel libtest threads collide on the
+/// same database files (skylence-be/ladybug#7). Poison-tolerant so one
+/// panicking probe does not cascade into every later one.
+static PROBE_STORE_LOCK: Mutex<()> = Mutex::new(());
+
+fn probe_store_guard() -> std::sync::MutexGuard<'static, ()> {
+    PROBE_STORE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn rows(conn: &Connection, node_id: &str, filter: &str) -> BTreeMap<(String, String), usize> {
     let q = format!(
@@ -53,6 +69,7 @@ fn rows(conn: &Connection, node_id: &str, filter: &str) -> BTreeMap<(String, Str
 #[test]
 #[ignore = "env-gated live-DB probe; set LBUG_REPRO_DB + LBUG_REPRO_NODE_ID"]
 fn live_db_in_filter_matches_or_chain() {
+    let _store_guard = probe_store_guard();
     let db_path = std::env::var("LBUG_REPRO_DB").expect("set LBUG_REPRO_DB");
     let node_id = std::env::var("LBUG_REPRO_NODE_ID").expect("set LBUG_REPRO_NODE_ID");
     let db = Database::new(&db_path, SystemConfig::default()).unwrap();
@@ -74,6 +91,7 @@ fn live_db_in_filter_matches_or_chain() {
 #[test]
 #[ignore = "env-gated live-DB probe; set LBUG_REPRO_DB + LBUG_REPRO_NODE_ID"]
 fn live_db_in_filter_with_second_database_open() {
+    let _store_guard = probe_store_guard();
     let db_path = std::env::var("LBUG_REPRO_DB").expect("set LBUG_REPRO_DB");
     let node_id = std::env::var("LBUG_REPRO_NODE_ID").expect("set LBUG_REPRO_NODE_ID");
 
@@ -159,6 +177,7 @@ fn fts_search_session(db: &Database) {
 #[test]
 #[ignore = "env-gated live-DB probe; set LBUG_REPRO_DB + LBUG_REPRO_NODE_ID; run with --exact"]
 fn live_db_in_filter_after_fts_search_session() {
+    let _store_guard = probe_store_guard();
     let db_path = std::env::var("LBUG_REPRO_DB").expect("set LBUG_REPRO_DB");
     let node_id = std::env::var("LBUG_REPRO_NODE_ID").expect("set LBUG_REPRO_NODE_ID");
     let db = Database::new(&db_path, SystemConfig::default()).unwrap();
@@ -191,6 +210,7 @@ fn live_db_in_filter_after_fts_search_session() {
 #[test]
 #[ignore = "env-gated live-DB probe; set LBUG_REPRO_DB + LBUG_REPRO_NODE_ID; run with --exact"]
 fn live_db_in_filter_readonly_beside_same_path_fts_writer() {
+    let _store_guard = probe_store_guard();
     let db_path = std::env::var("LBUG_REPRO_DB").expect("set LBUG_REPRO_DB");
     let node_id = std::env::var("LBUG_REPRO_NODE_ID").expect("set LBUG_REPRO_NODE_ID");
 
@@ -272,6 +292,7 @@ fn vector_search_session(db: &Database, dims: usize) {
 #[test]
 #[ignore = "env-gated live-DB probe; set LBUG_REPRO_DB + LBUG_REPRO_NODE_ID; run with --exact"]
 fn live_db_in_filter_daemon_anatomy_kitchen_sink() {
+    let _store_guard = probe_store_guard();
     let db_path = std::env::var("LBUG_REPRO_DB").expect("set LBUG_REPRO_DB");
     let node_id = std::env::var("LBUG_REPRO_NODE_ID").expect("set LBUG_REPRO_NODE_ID");
     let dims: usize = std::fs::read_to_string(
