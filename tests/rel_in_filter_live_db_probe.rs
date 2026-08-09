@@ -282,13 +282,19 @@ fn vector_search_session(db: &Database, dims: usize) {
 
 /// Every remaining in-process daemon ingredient at once (skybox#799/#806):
 /// a long-lived read-only pool Database, repeated per-query same-path R/W
-/// Database churn running VECTOR + FTS sessions (hybrid-style shared open on
-/// even rounds, two separate same-path opens on odd rounds), rel-property IN
-/// query history on the churned connections, and a throwaway unrelated DB
-/// with its own rel-property IN per round. Red here bisects down to the
-/// triggering ingredient; clean here means the corruption needs state this
-/// harness cannot build in-process (uptime, concurrency, query history) and
-/// the next lane is C++ instrumentation.
+/// Database churn running VECTOR + FTS sessions on ONE shared open per
+/// round, rel-property IN query history on the churned connections, and a
+/// throwaway unrelated DB with its own rel-property IN per round. Red here
+/// bisects down to the triggering ingredient; clean here means the
+/// corruption needs state this harness cannot build in-process (uptime,
+/// concurrency, query history) and the next lane is C++ instrumentation.
+///
+/// Since skybox's writer registry (binary-skybox fix/799-writer-registry),
+/// the daemon NEVER holds two same-path read-write Databases: FTS, vector,
+/// and cypher writers share one instance per path, and the index pipeline
+/// takes an exclusive slot. The S-tier engine line (S-tier PR #15) refuses
+/// a second same-path R/W open outright, so this probe models the current
+/// daemon anatomy: one R/W open per churn round, every session on it.
 #[test]
 #[ignore = "env-gated live-DB probe; set LBUG_REPRO_DB + LBUG_REPRO_NODE_ID; run with --exact"]
 fn live_db_in_filter_daemon_anatomy_kitchen_sink() {
@@ -311,16 +317,11 @@ fn live_db_in_filter_daemon_anatomy_kitchen_sink() {
     for i in 0..8 {
         let rw = Database::new(&db_path, SystemConfig::default()).unwrap();
         vector_search_session(&rw, dims);
-        if i % 2 == 0 {
-            // Hybrid-style: FTS on the same Database as the vector leg.
-            fts_search_session(&rw);
-            let _ = rows(&Connection::new(&rw).unwrap(), &node_id, IN_FILTER);
-        } else {
-            // Separate FtsIndexer-style open: two same-path R/W Databases alive.
-            let rw2 = Database::new(&db_path, SystemConfig::default()).unwrap();
-            fts_search_session(&rw2);
-            let _ = rows(&Connection::new(&rw2).unwrap(), &node_id, IN_FILTER);
-        }
+        // FTS beside vector on the same shared open — both the hybrid path
+        // and the FtsIndexer path route through skybox's writer registry,
+        // so a separate same-path R/W open no longer exists in the daemon.
+        fts_search_session(&rw);
+        let _ = rows(&Connection::new(&rw).unwrap(), &node_id, IN_FILTER);
 
         // Cross-repo diversity: throwaway unrelated DB, own rel-property IN.
         let dir = tempfile::tempdir().unwrap();
