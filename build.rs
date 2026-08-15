@@ -53,6 +53,7 @@ fn link_libraries(link_bundled_deps: bool) {
         }
 
         // liblbug.a requires OpenSSL — try pkg-config for the lib path, then emit link directives
+        let mut openssl_dir_found = false;
         if let Ok(output) = std::process::Command::new("pkg-config")
             .args(["--variable=libdir", "openssl"])
             .output()
@@ -61,6 +62,20 @@ fn link_libraries(link_bundled_deps: bool) {
                 let lib_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !lib_dir.is_empty() {
                     println!("cargo:rustc-link-search=native={lib_dir}");
+                    openssl_dir_found = true;
+                }
+            }
+        }
+        // pkg-config absent or ignorant of keg-only Homebrew OpenSSL: fall
+        // back to the standard Homebrew locations when building FOR macOS.
+        if !openssl_dir_found && target_os() == "macos" {
+            for dir in [
+                "/opt/homebrew/opt/openssl@3/lib",
+                "/usr/local/opt/openssl@3/lib",
+            ] {
+                if Path::new(dir).exists() {
+                    println!("cargo:rustc-link-search=native={dir}");
+                    break;
                 }
             }
         }
