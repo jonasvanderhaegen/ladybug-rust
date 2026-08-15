@@ -15,12 +15,24 @@ fn get_target() -> String {
     env::var("PROFILE").unwrap()
 }
 
+/// TARGET os, not host os: `cfg!(windows)` in a build script answers for the
+/// machine RUNNING the script, which breaks cross-compilation (linux/windows
+/// artifacts built on a macOS runner mis-detect as macOS). Port of the
+/// 0.17.0-line fix (skylence-be/ladybug-rust 007efe9, fork PR #2) onto 0.19.1.
+fn target_os() -> String {
+    env::var("CARGO_CFG_TARGET_OS").unwrap_or_default()
+}
+
+fn target_is_windows() -> bool {
+    target_os() == "windows"
+}
+
 fn link_libraries(link_bundled_deps: bool) {
     // This also needs to be set by any crates using it if they want to use extensions
-    if !cfg!(windows) && link_mode() == "static" {
+    if !target_is_windows() && link_mode() == "static" {
         println!("cargo:rustc-link-arg=-rdynamic");
     }
-    if cfg!(windows) && link_mode() == "dylib" {
+    if target_is_windows() && link_mode() == "dylib" {
         println!("cargo:rustc-link-lib=dylib=lbug_shared");
     } else if link_mode() == "dylib" {
         println!("cargo:rustc-link-lib={}=lbug", link_mode());
@@ -30,11 +42,11 @@ fn link_libraries(link_bundled_deps: bool) {
         println!("cargo:rustc-link-lib=static=lbug");
     }
     if link_mode() == "static" {
-        if cfg!(windows) {
+        if target_is_windows() {
             println!("cargo:rustc-link-lib=dylib=msvcrt");
             println!("cargo:rustc-link-lib=dylib=shell32");
             println!("cargo:rustc-link-lib=dylib=ole32");
-        } else if cfg!(target_os = "macos") {
+        } else if target_os() == "macos" {
             println!("cargo:rustc-link-lib=dylib=c++");
         } else {
             println!("cargo:rustc-link-lib=dylib=stdc++");
@@ -92,7 +104,7 @@ fn manifest_dir() -> PathBuf {
 }
 
 fn static_lbug_file_name() -> &'static str {
-    if cfg!(windows) {
+    if target_is_windows() {
         "lbug.lib"
     } else {
         "liblbug.a"
@@ -234,7 +246,7 @@ fn get_lbug_root() -> PathBuf {
     if bundled_root.is_symlink() || bundled_root.is_dir() {
         return bundled_root;
     }
-    if cfg!(windows) {
+    if target_is_windows() {
         return manifest_dir.join("../..");
     }
 
@@ -296,7 +308,7 @@ fn build_bundled_cmake() -> Vec<PathBuf> {
         .define("BUILD_SHELL", "OFF")
         .define("BUILD_SINGLE_FILE_HEADER", "OFF")
         .define("AUTO_UPDATE_GRAMMAR", "OFF");
-    if cfg!(windows) {
+    if target_is_windows() {
         build.generator("Ninja");
         build.cxxflag("/EHsc");
         build.define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreadedDLL");
@@ -361,7 +373,7 @@ fn build_ffi(
         println!("cargo:rerun-if-changed=lbug-src/tools/CMakeLists.txt");
     }
 
-    if cfg!(windows) {
+    if target_is_windows() {
         build.flag("/std:c++20");
         build.flag("/MD");
     } else {
