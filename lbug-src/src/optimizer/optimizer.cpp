@@ -1,0 +1,124 @@
+#include "optimizer/optimizer.h"
+
+#include "main/client_context.h"
+#include "optimizer/acc_hash_join_optimizer.h"
+#include "optimizer/agg_key_dependency_optimizer.h"
+#include "optimizer/bool_folding_optimizer.h"
+#include "optimizer/cardinality_updater.h"
+#include "optimizer/correlated_subquery_unnest_solver.h"
+#include "optimizer/count_rel_table_optimizer.h"
+#include "optimizer/factorization_rewriter.h"
+#include "optimizer/filter_push_down_optimizer.h"
+#include "optimizer/foreign_join_push_down_optimizer.h"
+#include "optimizer/limit_push_down_optimizer.h"
+#include "optimizer/order_by_push_down_optimizer.h"
+#include "optimizer/projection_push_down_optimizer.h"
+#include "optimizer/remove_factorization_rewriter.h"
+#include "optimizer/remove_unnecessary_distinct_optimizer.h"
+#include "optimizer/remove_unnecessary_join_optimizer.h"
+#include "optimizer/remove_unnecessary_order_by_optimizer.h"
+#include "optimizer/schema_populator.h"
+#include "optimizer/top_k_optimizer.h"
+#include "optimizer/unwind_dedup_optimizer.h"
+#include "planner/operator/logical_explain.h"
+#include "transaction/transaction.h"
+
+namespace lbug {
+namespace optimizer {
+
+void Optimizer::optimize(planner::LogicalPlan* plan, main::ClientContext* context,
+    const planner::CardinalityEstimator& cardinalityEstimator) {
+    if (context->getClientConfig()->enablePlanOptimizer) {
+        // Factorization structure should be removed before further optimization can be applied.
+        auto removeFactorizationRewriter = RemoveFactorizationRewriter();
+        removeFactorizationRewriter.rewrite(plan);
+
+        auto correlatedSubqueryUnnestSolver = CorrelatedSubqueryUnnestSolver(nullptr);
+        correlatedSubqueryUnnestSolver.solve(plan->getLastOperator().get());
+
+        auto removeUnnecessaryJoinOptimizer = RemoveUnnecessaryJoinOptimizer();
+        removeUnnecessaryJoinOptimizer.rewrite(plan);
+
+        // UnwindDedupOptimizer should be applied after factorization is removed
+        // to avoid issues with computeFlatSchema.
+        auto unwindDedupOptimizer = UnwindDedupOptimizer();
+        unwindDedupOptimizer.rewrite(plan);
+
+        // CountRelTableOptimizer should be applied early before other optimizations
+        // that might change the plan structure.
+        auto countRelTableOptimizer = CountRelTableOptimizer(context);
+        countRelTableOptimizer.rewrite(plan);
+
+        // ForeignJoinPushDownOptimizer should run before filter push down to detect
+        // the full pattern before it gets modified.
+        auto foreignJoinPushDownOptimizer = ForeignJoinPushDownOptimizer(context);
+        foreignJoinPushDownOptimizer.rewrite(plan);
+
+        // Boolean folding should run before filter push-down so that
+        // contradictory or always-true predicates are simplified first.
+        auto boolFoldingOptimizer = BoolFoldingOptimizer();
+        boolFoldingOptimizer.rewrite(plan);
+
+        auto filterPushDownOptimizer = FilterPushDownOptimizer(context, &cardinalityEstimator);
+        filterPushDownOptimizer.rewrite(plan);
+
+        auto projectionPushDownOptimizer =
+            ProjectionPushDownOptimizer(context->getClientConfig()->recursivePatternSemantic);
+        projectionPushDownOptimizer.rewrite(plan);
+
+        auto orderByPushDownOptimizer = OrderByPushDownOptimizer();
+        orderByPushDownOptimizer.rewrite(plan);
+
+        auto limitPushDownOptimizer = LimitPushDownOptimizer();
+        limitPushDownOptimizer.rewrite(plan);
+
+        if (context->getClientConfig()->enableSemiMask) {
+            // HashJoinSIPOptimizer should be applied after optimizers that manipulate hash join.
+            auto hashJoinSIPOptimizer = HashJoinSIPOptimizer();
+            hashJoinSIPOptimizer.rewrite(plan);
+        }
+
+        auto topKOptimizer = TopKOptimizer();
+        topKOptimizer.rewrite(plan);
+
+        // Degree top-k rewrites need the LIMIT to be folded into ORDER_BY first.
+        countRelTableOptimizer.rewrite(plan);
+
+        auto factorizationRewriter = FactorizationRewriter();
+        factorizationRewriter.rewrite(plan);
+
+        // AggKeyDependencyOptimizer doesn't change factorization structure and thus can be put
+        // after FactorizationRewriter.
+        auto aggKeyDependencyOptimizer = AggKeyDependencyOptimizer();
+        aggKeyDependencyOptimizer.rewrite(plan);
+
+        // RemoveUnnecessaryDistinctOptimizer should run after AggKeyDependencyOptimizer
+        // so that dependent-key resolution has already happened.
+        auto removeUnnecessaryDistinctOptimizer = RemoveUnnecessaryDistinctOptimizer();
+        removeUnnecessaryDistinctOptimizer.rewrite(plan);
+
+        // RemoveUnnecessaryOrderByOptimizer removes ORDER BY nodes that do not
+        // affect the result (e.g., before a GROUP BY-less aggregate like COUNT(*)).
+        auto removeUnnecessaryOrderByOptimizer = RemoveUnnecessaryOrderByOptimizer();
+        removeUnnecessaryOrderByOptimizer.rewrite(plan);
+
+        // for EXPLAIN LOGICAL we need to update the cardinalities for the optimized plan
+        // we don't need to do this otherwise as we don't use the cardinalities after planning
+        if (plan->getLastOperatorRef().getOperatorType() == planner::LogicalOperatorType::EXPLAIN) {
+            const auto& explain = plan->getLastOperatorRef().cast<planner::LogicalExplain>();
+            if (explain.getExplainType() == common::ExplainType::LOGICAL_PLAN) {
+                auto cardinalityUpdater = CardinalityUpdater(cardinalityEstimator,
+                    transaction::Transaction::Get(*context));
+                cardinalityUpdater.rewrite(plan);
+            }
+        }
+    } else {
+        // we still need to compute the schema for each operator even if we have optimizations
+        // disabled
+        auto schemaPopulator = SchemaPopulator{};
+        schemaPopulator.rewrite(plan);
+    }
+}
+
+} // namespace optimizer
+} // namespace lbug

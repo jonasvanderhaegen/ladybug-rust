@@ -15,22 +15,12 @@ fn get_target() -> String {
     env::var("PROFILE").unwrap()
 }
 
-fn target_os() -> String {
-    env::var("CARGO_CFG_TARGET_OS").unwrap_or_default()
-}
-
-fn target_is_windows() -> bool {
-    target_os() == "windows"
-}
-
 fn link_libraries(link_bundled_deps: bool) {
-    let target_os = target_os();
-    let target_is_windows = target_os == "windows";
     // This also needs to be set by any crates using it if they want to use extensions
-    if !target_is_windows && link_mode() == "static" {
+    if !cfg!(windows) && link_mode() == "static" {
         println!("cargo:rustc-link-arg=-rdynamic");
     }
-    if target_is_windows && link_mode() == "dylib" {
+    if cfg!(windows) && link_mode() == "dylib" {
         println!("cargo:rustc-link-lib=dylib=lbug_shared");
     } else if link_mode() == "dylib" {
         println!("cargo:rustc-link-lib={}=lbug", link_mode());
@@ -40,15 +30,30 @@ fn link_libraries(link_bundled_deps: bool) {
         println!("cargo:rustc-link-lib=static=lbug");
     }
     if link_mode() == "static" {
-        if target_is_windows {
+        if cfg!(windows) {
             println!("cargo:rustc-link-lib=dylib=msvcrt");
             println!("cargo:rustc-link-lib=dylib=shell32");
             println!("cargo:rustc-link-lib=dylib=ole32");
-        } else if target_os == "macos" {
+        } else if cfg!(target_os = "macos") {
             println!("cargo:rustc-link-lib=dylib=c++");
         } else {
             println!("cargo:rustc-link-lib=dylib=stdc++");
         }
+
+        // liblbug.a requires OpenSSL — try pkg-config for the lib path, then emit link directives
+        if let Ok(output) = std::process::Command::new("pkg-config")
+            .args(["--variable=libdir", "openssl"])
+            .output()
+        {
+            if output.status.success() {
+                let lib_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !lib_dir.is_empty() {
+                    println!("cargo:rustc-link-search=native={lib_dir}");
+                }
+            }
+        }
+        println!("cargo:rustc-link-lib=dylib=ssl");
+        println!("cargo:rustc-link-lib=dylib=crypto");
 
         if !link_bundled_deps {
             return;
@@ -87,7 +92,7 @@ fn manifest_dir() -> PathBuf {
 }
 
 fn static_lbug_file_name() -> &'static str {
-    if target_is_windows() {
+    if cfg!(windows) {
         "lbug.lib"
     } else {
         "liblbug.a"
@@ -229,7 +234,7 @@ fn get_lbug_root() -> PathBuf {
     if bundled_root.is_symlink() || bundled_root.is_dir() {
         return bundled_root;
     }
-    if target_is_windows() {
+    if cfg!(windows) {
         return manifest_dir.join("../..");
     }
 
@@ -291,7 +296,7 @@ fn build_bundled_cmake() -> Vec<PathBuf> {
         .define("BUILD_SHELL", "OFF")
         .define("BUILD_SINGLE_FILE_HEADER", "OFF")
         .define("AUTO_UPDATE_GRAMMAR", "OFF");
-    if target_is_windows() {
+    if cfg!(windows) {
         build.generator("Ninja");
         build.cxxflag("/EHsc");
         build.define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreadedDLL");
@@ -304,40 +309,6 @@ fn build_bundled_cmake() -> Vec<PathBuf> {
 
     let lbug_lib_path = build_dir.join("build").join("src");
     println!("cargo:rustc-link-search=native={}", lbug_lib_path.display());
-
-    for dir in [
-        "utf8proc",
-        "antlr4_cypher",
-        "antlr4_runtime",
-        "re2",
-        "brotli",
-        "alp",
-        "fastpfor",
-        "parquet",
-        "thrift",
-        "snappy",
-        "zstd",
-        "miniz",
-        "mbedtls",
-        "lz4",
-        "roaring_bitmap",
-        "simsimd",
-        "yyjson",
-    ] {
-        let lib_path = build_dir
-            .join("build")
-            .join("third_party")
-            .join(dir)
-            .canonicalize()
-            .unwrap_or_else(|_| {
-                panic!(
-                    "Could not find {}/build/third_party/{}",
-                    build_dir.display(),
-                    dir
-                )
-            });
-        println!("cargo:rustc-link-search=native={}", lib_path.display());
-    }
 
     vec![
         lbug_root.join("src/include"),
@@ -374,6 +345,11 @@ fn build_ffi(
 
     println!("cargo:rerun-if-changed=include/lbug_rs.h");
     println!("cargo:rerun-if-changed=src/lbug_rs.cpp");
+    println!("cargo:rerun-if-changed={bridge_file}");
+    println!("cargo:rerun-if-changed={source_file}");
+    if cfg!(feature = "arrow") {
+        println!("cargo:rerun-if-changed=include/lbug_arrow.h");
+    }
     if bundled {
         // Note that this should match the lbug-src/* entries in the package.include list in Cargo.toml
         // Unfortunately they appear to need to be specified individually since the symlink is
@@ -385,7 +361,7 @@ fn build_ffi(
         println!("cargo:rerun-if-changed=lbug-src/tools/CMakeLists.txt");
     }
 
-    if target_is_windows() {
+    if cfg!(windows) {
         build.flag("/std:c++20");
         build.flag("/MD");
     } else {
@@ -402,7 +378,7 @@ fn main() {
 
     let manifest_dir = manifest_dir();
     let mut bundled = false;
-    let mut link_bundled_deps = false;
+    let link_bundled_deps = false;
     let mut include_paths = vec![manifest_dir.join("include")];
 
     if let (Ok(lbug_lib_dir), Ok(lbug_include)) =
@@ -417,7 +393,6 @@ fn main() {
     } else {
         include_paths.extend(build_bundled_cmake());
         bundled = true;
-        link_bundled_deps = true;
         println!("cargo:rustc-env=LBUG_PRECOMPILED_SOURCE=source");
         println!("cargo:rustc-env=LBUG_PRECOMPILED_LIBRARY_DIR=");
     }
