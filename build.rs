@@ -69,14 +69,17 @@ fn link_libraries(link_bundled_deps: bool) {
         // pkg-config absent or ignorant of keg-only Homebrew OpenSSL: fall
         // back to the standard Homebrew locations when building FOR macOS.
         if !openssl_dir_found && target_os() == "macos" {
-            for dir in [
-                "/opt/homebrew/opt/openssl@3/lib",
-                "/usr/local/opt/openssl@3/lib",
-            ] {
-                if Path::new(dir).exists() {
-                    println!("cargo:rustc-link-search=native={dir}");
-                    break;
-                }
+            // Pick the Homebrew prefix by TARGET arch: /opt/homebrew ships
+            // arm64 libs, /usr/local ships x86_64 — taking whichever exists
+            // first would mislink an x86_64-apple-darwin build on an Apple
+            // Silicon host.
+            let dir = if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64") {
+                "/usr/local/opt/openssl@3/lib"
+            } else {
+                "/opt/homebrew/opt/openssl@3/lib"
+            };
+            if Path::new(dir).exists() {
+                println!("cargo:rustc-link-search=native={dir}");
             }
         }
         println!("cargo:rustc-link-lib=dylib=ssl");
@@ -172,7 +175,7 @@ fn prebuilt_source_desc() -> String {
         let version = version.strip_prefix('v').unwrap_or(&version);
         format!("release:{repo}/v{version}")
     } else {
-        format!("release:{repo}/latest")
+        format!("release:{repo}/v{}", default_engine_version())
     }
 }
 
@@ -275,7 +278,11 @@ fn get_lbug_root() -> PathBuf {
     if bundled_root.is_symlink() || bundled_root.is_dir() {
         return bundled_root;
     }
-    if target_is_windows() {
+    // HOST decision, deliberately not target-based: this picks where the
+    // C++ source tree lives on the machine RUNNING the build (and whether
+    // the curl+tar download path below can run), so `cfg!(windows)` is
+    // correct here even in the cross-compile port.
+    if cfg!(windows) {
         return manifest_dir.join("../..");
     }
 
