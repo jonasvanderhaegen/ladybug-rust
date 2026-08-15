@@ -111,13 +111,22 @@ fn static_lbug_file_name() -> &'static str {
     }
 }
 
+/// Engine artifact version to fetch when the caller pins nothing explicitly.
+/// Defaults to this crate's own version instead of the floating "latest":
+/// an unpinned default silently changes the engine (and its storage format)
+/// under a rebuilt binary — the nondeterminism that voided the skybox#806
+/// falsification campaign (engine bytes and file format changed at once).
+fn default_engine_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 fn prebuilt_cache_key() -> String {
     let source = if let Ok(run_id) = env::var("LBUG_PRECOMPILED_RUN_ID") {
         format!("run-{run_id}")
     } else if let Ok(version) = env::var("LBUG_VERSION") {
         format!("version-{version}")
     } else {
-        "latest".to_string()
+        format!("version-{}", default_engine_version())
     };
 
     source
@@ -193,11 +202,16 @@ fn try_download_prebuilt_lbug(manifest_dir: &Path) -> bool {
         return false;
     }
 
-    let status = std::process::Command::new("sh")
-        .arg(&script)
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg(&script)
         .env("LBUG_TARGET_DIR", &lib_dir)
-        .current_dir(manifest_dir)
-        .status();
+        .current_dir(manifest_dir);
+    // Keep the downloader in lockstep with the cache key: when nothing is
+    // pinned, fetch this crate's own engine version, never a floating latest.
+    if env::var("LBUG_PRECOMPILED_RUN_ID").is_err() && env::var("LBUG_VERSION").is_err() {
+        cmd.env("LBUG_VERSION", default_engine_version());
+    }
+    let status = cmd.status();
 
     match status {
         Ok(status) if status.success() && lib_path.exists() => true,
